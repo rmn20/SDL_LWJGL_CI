@@ -1,0 +1,296 @@
+name: LWJGL Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  S3_PARAMS: --cache-control "public,must-revalidate,proxy-revalidate,max-age=0"
+  SDL_PARAMS: -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DDSDL_DISABLE_INSTALL=ON -DCMAKE_BUILD_TYPE=Release
+
+jobs:
+  linux:
+    name: Linux
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [x64]
+        include:
+          - ARCH: x64
+    env:
+      LWJGL_ARCH: ${{matrix.ARCH}}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive sudo apt-get -yq update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get -yq install awscli cmake gcc
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+      - name: Install dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive sudo apt-get -yq install \
+            libasound2-dev \
+            libpulse-dev \
+            libaudio-dev \
+            libjack-dev \
+            libsndio-dev \
+            libusb-1.0-0-dev \
+            libx11-dev \
+            libxext-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxss-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libdrm-dev \
+            libgbm-dev \
+            libgl1-mesa-dev \
+            libgles2-mesa-dev \
+            libegl1-mesa-dev \
+            libdbus-1-dev \
+            libibus-1.0-dev \
+            libudev-dev \
+            fcitx-libs-dev \
+            libpipewire-0.3-dev \
+            libdecor-0-dev \
+            liburing-dev
+      - name: Configure build
+        run: cmake -B build $SDL_PARAMS -DCMAKE_C_FLAGS="-std=c99 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0"
+      - name: Build
+        run: |
+          cmake --build build --parallel
+          strip build/libSDL3.so
+      - name: Upload artifact
+        run: aws s3 cp build/libSDL3.so s3://lwjgl-build/nightly/linux/${{matrix.ARCH}}/ ${{env.S3_PARAMS}}
+      - name: Upload git revision
+        run: |
+          git config --global --add safe.directory $(pwd)
+          git log --first-parent --pretty=format:%H --skip 1 -n 1 > libSDL3.so.git
+          aws s3 cp libSDL3.so.git s3://lwjgl-build/nightly/linux/${{matrix.ARCH}}/ ${{env.S3_PARAMS}}
+
+  linux-cross:
+    name: Linux Cross
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [arm32, arm64, ppc64le, riscv64]
+        include:
+          # ----
+          - ARCH: arm32
+            CROSS_ARCH: armhf
+            TRIPLET: arm-linux-gnueabihf
+          # ----
+          - ARCH: arm64
+            CROSS_ARCH: arm64
+            TRIPLET: aarch64-linux-gnu
+          # ----
+          - ARCH: ppc64le
+            CROSS_ARCH: ppc64el
+            TRIPLET: powerpc64le-linux-gnu
+          # ----
+          - ARCH: riscv64
+            CROSS_ARCH: riscv64
+            TRIPLET: riscv64-linux-gnu
+    env:
+      LWJGL_ARCH: ${{matrix.ARCH}}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive sudo apt-get -yq update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get -yq install awscli cmake gcc-${{matrix.TRIPLET}} libc6-dev-${{matrix.CROSS_ARCH}}-cross
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+      - name: Prepare cross-compilation for ${{matrix.CROSS_ARCH}}
+        run: |
+          sudo grep 'deb ' /etc/apt/sources.list | sudo tee /etc/apt/sources.list.d/ports.list
+          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          sudo sed -i 's#^deb [^ ]\+#deb [arch=${{matrix.CROSS_ARCH}}] https://ports.ubuntu.com/ubuntu-ports/#' /etc/apt/sources.list.d/ports.list
+          sudo dpkg --add-architecture ${{matrix.CROSS_ARCH}}
+          sudo apt-get update || true
+      - name: Install dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive sudo apt-get -yq install \
+            libasound2-dev:${{matrix.CROSS_ARCH}} \
+            libpulse-dev:${{matrix.CROSS_ARCH}} \
+            libaudio-dev:${{matrix.CROSS_ARCH}} \
+            libjack-dev:${{matrix.CROSS_ARCH}} \
+            libsndio-dev:${{matrix.CROSS_ARCH}} \
+            libusb-1.0-0-dev:${{matrix.CROSS_ARCH}} \
+            libx11-dev:${{matrix.CROSS_ARCH}} \
+            libxext-dev:${{matrix.CROSS_ARCH}} \
+            libxrandr-dev:${{matrix.CROSS_ARCH}} \
+            libxcursor-dev:${{matrix.CROSS_ARCH}} \
+            libxfixes-dev:${{matrix.CROSS_ARCH}} \
+            libxi-dev:${{matrix.CROSS_ARCH}} \
+            libxss-dev:${{matrix.CROSS_ARCH}} \
+            libwayland-dev:${{matrix.CROSS_ARCH}} \
+            libxkbcommon-dev:${{matrix.CROSS_ARCH}} \
+            libdrm-dev:${{matrix.CROSS_ARCH}} \
+            libgbm-dev:${{matrix.CROSS_ARCH}} \
+            libgl1-mesa-dev:${{matrix.CROSS_ARCH}} \
+            libgles2-mesa-dev:${{matrix.CROSS_ARCH}} \
+            libegl1-mesa-dev:${{matrix.CROSS_ARCH}} \
+            libdbus-1-dev:${{matrix.CROSS_ARCH}} \
+            libibus-1.0-dev:${{matrix.CROSS_ARCH}} \
+            libudev-dev:${{matrix.CROSS_ARCH}} \
+            fcitx-libs-dev:${{matrix.CROSS_ARCH}} \
+            libpipewire-0.3-dev:${{matrix.CROSS_ARCH}} \
+            libdecor-0-dev:${{matrix.CROSS_ARCH}} \
+            liburing-dev:${{matrix.CROSS_ARCH}}
+      - name: Configure build
+        run: PKG_CONFIG_PATH=${PKG_CONFIG_PATH}:${CMAKE_SYSROOT}/usr/lib/${{matrix.TRIPLET}}/pkgconfig CC=${{matrix.TRIPLET}}-gcc cmake -B build $SDL_PARAMS -DCMAKE_C_FLAGS="-std=c99 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0"
+      - name: Build
+        run: |
+          cmake --build build --parallel
+          ${{matrix.TRIPLET}}-strip build/libSDL3.so
+      - name: Upload artifact
+        run: aws s3 cp build/libSDL3.so s3://lwjgl-build/nightly/linux/${{matrix.ARCH}}/ ${{env.S3_PARAMS}}
+      - name: Upload git revision
+        run: |
+          git config --global --add safe.directory $(pwd)
+          git log --first-parent --pretty=format:%H --skip 1 -n 1 > libSDL3.so.git
+          aws s3 cp libSDL3.so.git s3://lwjgl-build/nightly/linux/${{matrix.ARCH}}/ ${{env.S3_PARAMS}}
+
+  freebsd-cross:
+    name: FreeBSD Cross
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+      - name: Build
+        uses: cross-platform-actions/action@v0.28.0
+        with:
+          operating_system: freebsd
+          architecture: x86-64
+          version: '13.4'
+          memory: 4G
+          shell: bash
+          environment_variables: SDL_PARAMS
+          run: |
+            sudo pkg install -y cmake gmake pkgconf \
+              libXcursor \
+              libXext \
+              libXinerama \
+              libXi \
+              libXfixes \
+              libXrandr \
+              libXScrnSaver \
+              libXxf86vm \
+              wayland \
+              wayland-protocols \
+              libxkbcommon \
+              mesa-libs \
+              libglvnd \
+              evdev-proto \
+              libinotify \
+              alsa-lib \
+              jackit \
+              pipewire \
+              pulseaudio \
+              sndio \
+              dbus \
+              zh-fcitx \
+              ibus \
+              libudev-devd
+            cmake -B build $SDL_PARAMS -DCMAKE_C_FLAGS="-std=c99 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" -DSDL_CHECK_REQUIRED_INCLUDES=/usr/local/include" -DSDL_CHECK_REQUIRED_LINK_OPTIONS=-L/usr/local/lib"
+            cmake --build build --parallel
+            strip build/libSDL3.so
+      - name: Upload artifact
+        run: aws s3 cp build/libSDL3.so s3://lwjgl-build/nightly/freebsd/x64/ ${{env.S3_PARAMS}}
+      - name: Upload git revision
+        run: |
+          git config --global --add safe.directory $PWD
+          git log --first-parent --pretty=format:%H --skip 1 -n 1 > libSDL3.so.git
+          aws s3 cp libSDL3.so.git s3://lwjgl-build/nightly/freebsd/x64/ ${{env.S3_PARAMS}}
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [x64, arm64]
+        include:
+          - ARCH: x64
+            CMAKE_PARAMS: -DCMAKE_OSX_DEPLOYMENT_TARGET=10.11 -DCMAKE_OSX_ARCHITECTURES=x86_64
+          - ARCH: arm64
+            CMAKE_PARAMS: -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_OSX_ARCHITECTURES=arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+      - name: Configure build
+        run: cmake -B build $SDL_PARAMS ${{matrix.CMAKE_PARAMS}}
+      - name: Build
+        run: |
+          cmake --build build --parallel
+          strip -u -r build/libSDL3.dylib
+      - name: Upload artifact
+        run: aws s3 cp build/libSDL3.dylib s3://lwjgl-build/nightly/macosx/${{matrix.ARCH}}/ ${{env.S3_PARAMS}}
+      - name: Upload git revision
+        run: |
+          git log --first-parent --pretty=format:%H --skip 1 -n 1 > libSDL3.dylib.git
+          aws s3 cp libSDL3.dylib.git s3://lwjgl-build/nightly/macosx/${{matrix.ARCH}}/ ${{env.S3_PARAMS}}
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [x86, x64, arm64]
+        include:
+          - ARCH: x86
+            PLATFORM: Win32
+          - ARCH: x64
+            PLATFORM: x64
+          - ARCH: arm64
+            PLATFORM: ARM64
+    defaults:
+      run:
+        shell: cmd
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 3
+      - name: 'Build & install libusb'
+        shell: pwsh
+        run: |
+          vcpkg install libusb --triplet ${{ matrix.ARCH }}-windows
+
+          $libusb_incdir = "C:\vcpkg\packages\libusb_${{ matrix.ARCH}}-windows\include\libusb-1.0";
+          $libusb_libdir = "C:\vcpkg\packages\libusb_${{ matrix.ARCH}}-windows\lib";
+
+          echo "root=${libusb_incdir};${libusb_libdir}" >> $env:GITHUB_OUTPUT
+          echo "LibUSB_ROOT=${libusb_incdir};${libusb_libdir}" >> $env:GITHUB_ENV
+      - name: Configure build
+        #-T ClangCL
+        run: cmake -B build -G "Visual Studio 17 2022" -A ${{matrix.PLATFORM}},version=10.0.26100.0 %SDL_PARAMS%
+      - name: Build
+        run: cmake --build build --parallel --config Release
+      - name: Upload artifact
+        run: aws s3 cp build\Release\SDL3.dll s3://lwjgl-build/nightly/windows/${{matrix.ARCH}}/SDL3.dll ${{env.S3_PARAMS}}
+      - name: Upload git revision
+        run: |
+          git log --first-parent --pretty=format:%%H --skip 1 -n 1 > SDL3.dll.git
+          aws s3 cp SDL3.dll.git s3://lwjgl-build/nightly/windows/${{matrix.ARCH}}/ ${{env.S3_PARAMS}}
